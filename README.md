@@ -117,7 +117,7 @@ projects/<项目名>/
 
 ## 文章
 
-本项目属于[《我写了一个"可编辑PPT版"的 NotebookLM》](https://mp.weixin.qq.com/s/--)的演示代码项目。
+本项目属于[《我写了一个"可编辑PPT版"的 NotebookLM》](https://mp.weixin.qq.com/s/wNE871I5w73aISuPQ0WxCA)的演示代码项目。
 
 关注公众号获取更多内容:
 
