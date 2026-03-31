@@ -1,12 +1,14 @@
 import os
+import shutil
+import concurrent.futures
 import streamlit as st
 from src.optimizer import optimize_document, parse_slides
-from src.image_generator import generate_slide_image
+from src.image_generator import generate_slide_image, IMAGE_MODELS, DEFAULT_MODEL as DEFAULT_IMAGE_MODEL
 from src.pdf_builder import build_pdf
 from src.ppt_generator import (
-    generate_slide_code, build_single_slide_pptx, build_full_pptx,
-    save_slide_code, load_slide_code, load_all_slide_codes,
-    get_single_pptx_path,
+    generate_slide_code, build_single_slide_pptx, build_single_slide_pptx_with_retry,
+    build_full_pptx, save_slide_code, load_slide_code, load_all_slide_codes,
+    get_single_pptx_path, test_slide_code,
 )
 
 PROJECTS_DIR = os.path.join(os.path.dirname(__file__), "projects")
@@ -43,6 +45,18 @@ with st.sidebar:
     project_name = st.selectbox("选择项目", existing, index=default_idx)
     proj_dir = os.path.join(PROJECTS_DIR, project_name)
 
+    # 删除项目功能
+    st.divider()
+    st.subheader("删除项目")
+    confirm_delete = st.checkbox("确认删除当前项目", key="confirm_delete")
+    if st.button("🗑️ 删除项目", disabled=not confirm_delete, type="secondary"):
+        if os.path.exists(proj_dir):
+            shutil.rmtree(proj_dir)
+            if "selected_project" in st.session_state:
+                del st.session_state["selected_project"]
+            st.success(f"项目 '{project_name}' 已删除")
+            st.rerun()
+
     st.divider()
     st.markdown("""
 **🚀 功能说明**
@@ -53,9 +67,27 @@ with st.sidebar:
 4. **导出** — 合并为 PDF / AI 生成可编辑 PPT
     """)
 
-    text_model = "gemini-3-flash-preview"
-    image_model = "gemini-3-pro-image-preview"
-    ppt_model = "gemini-3-pro-preview"
+    text_model = "MiniMax-M2.7"
+    ppt_model = "qwen3.5-plus"
+
+    # 图片生成模型选择
+    st.sidebar.subheader("模型设置")
+    image_model_options = {v["name"]: k for k, v in IMAGE_MODELS.items()}
+    selected_image_model_name = st.sidebar.selectbox(
+        "图片生成模型",
+        options=list(image_model_options.keys()),
+        index=0,  # 默认选择第一个 (Z-Image-Turbo)
+        help="选择生成信息图图片的模型",
+    )
+    image_model = image_model_options[selected_image_model_name]
+
+    # PPT 代码生成模型
+    ppt_model = st.sidebar.selectbox(
+        "PPT 代码生成模型",
+        options=["qwen3.5-plus", "qwen3-plus"],
+        index=0,
+        help="选择生成 PPT 代码的 Vision 模型",
+    )
 
 # ── Helper paths ─────────────────────────────────────────────────────
 raw_path = os.path.join(proj_dir, "原文档", "原稿.md")
@@ -113,12 +145,16 @@ st.header("Step 2: 优化稿 & 风格描述")
 
 tab_opt, tab_style = st.tabs(["优化稿", "风格描述"])
 
+# 使用时间戳作为动态 key，确保每次生成后都能刷新显示
+opt_key = f"opt_text_{os.path.getmtime(opt_path) if os.path.exists(opt_path) else 0}"
+style_key = f"style_text_{os.path.getmtime(style_path) if os.path.exists(style_path) else 0}"
+
 with tab_opt:
     opt_text = st.text_area(
         "优化稿 (可编辑)",
         value=read_file(opt_path),
         height=400,
-        key="opt_text",
+        key=opt_key,
     )
     if st.button("保存优化稿"):
         write_file(opt_path, opt_text)
@@ -129,7 +165,7 @@ with tab_style:
         "PPT样式风格描述 (可编辑)",
         value=read_file(style_path),
         height=300,
-        key="style_text",
+        key=style_key,
     )
     if st.button("保存风格描述"):
         write_file(style_path, style_text)
@@ -148,8 +184,12 @@ if current_opt:
     if st.button("一键生成所有图片", type="primary"):
         os.makedirs(img_dir, exist_ok=True)
         progress = st.progress(0)
-        for i, slide in enumerate(slides):
-            with st.spinner(f"正在生成第 {i+1}/{len(slides)} 页..."):
+        status = st.empty()
+
+        def generate_single_image(args):
+            """生成单张图片的辅助函数"""
+            i, slide = args
+            try:
                 img_bytes = generate_slide_image(
                     slide, current_style, i + 1, len(slides), model=image_model
                 )
@@ -157,7 +197,21 @@ if current_opt:
                     img_path = os.path.join(img_dir, f"{i+1:02d}.jpg")
                     with open(img_path, "wb") as f:
                         f.write(img_bytes)
-            progress.progress((i + 1) / len(slides))
+                    return (i, True, None)
+                return (i, False, "生成失败")
+            except Exception as e:
+                return (i, False, str(e))
+
+        # 并行生成图片
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = list(executor.map(generate_single_image, enumerate(slides)))
+            completed = 0
+            for i, success, error in futures:
+                completed += 1
+                status.text(f"已完成 {completed}/{len(slides)} 页")
+                progress.progress(completed / len(slides))
+
+        status.empty()
         st.success("所有图片生成完成！")
         st.rerun()
 
@@ -178,7 +232,7 @@ if current_opt:
                 img_file = existing_imgs[idx]
                 img_full = os.path.join(img_dir, img_file)
                 with col:
-                    st.image(img_full, caption=img_file, use_container_width=True)
+                    st.image(img_full, caption=img_file, width='stretch')
                     page_idx = idx  # index into slides list
                     if page_idx < len(slides):
                         with st.expander(f"重新生成 {img_file}"):
@@ -260,31 +314,76 @@ with tab_ppt:
             progress = st.progress(0)
             status = st.empty()
             all_codes = {}
+            failed_pages = []
 
-            for i, img_file in enumerate(ppt_img_files):
+            def generate_and_test_slide(args):
+                """生成单页 PPT 代码并测试"""
+                i, img_file = args
                 page = i + 1
-                status.text(f"正在分析第 {page}/{total_pages} 页...")
                 img_full = os.path.join(img_dir, img_file)
-                code = generate_slide_code(
-                    image_path=img_full,
-                    page_num=page,
-                    total_pages=total_pages,
-                    model=ppt_model,
-                )
-                save_slide_code(proj_dir, page, code)
-                all_codes[page] = code
 
-                # Also build single-page pptx
-                single_path = get_single_pptx_path(proj_dir, page)
-                build_single_slide_pptx(code, single_path)
+                for attempt in range(3):  # 最多重试3次
+                    try:
+                        code = generate_slide_code(
+                            image_path=img_full,
+                            page_num=page,
+                            total_pages=total_pages,
+                            model=ppt_model,
+                        )
 
-                progress.progress(page / total_pages)
+                        # 测试代码是否有效
+                        test_ok, test_error = test_slide_code(code)
+                        if test_ok:
+                            return (page, code, None)
+                        else:
+                            # 测试失败，如果还有重试机会则继续
+                            if attempt < 2:
+                                print(f"[Page {page}] Test failed (attempt {attempt+1}), retrying...")
+                                continue
+                            return (page, None, f"测试失败: {test_error[:500]}")
+                    except Exception as e:
+                        if attempt < 2:
+                            continue
+                        return (page, None, str(e))
+
+                return (page, None, "超过最大重试次数")
+
+            # 并行生成 PPT 代码（带测试）
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = list(executor.map(generate_and_test_slide, enumerate(ppt_img_files)))
+                completed = 0
+                for page, code, error in futures:
+                    completed += 1
+                    status.text(f"已完成 {completed}/{total_pages} 页")
+                    progress.progress(completed / total_pages)
+                    if code:
+                        # 再次验证并生成PPTX
+                        single_path = get_single_pptx_path(proj_dir, page)
+                        success, err, final_code = build_single_slide_pptx_with_retry(
+                            code, single_path, max_retries=1
+                        )
+                        if success:
+                            save_slide_code(proj_dir, page, final_code)
+                            all_codes[page] = final_code
+                        else:
+                            failed_pages.append((page, err))
+                    else:
+                        failed_pages.append((page, error))
+
+            if failed_pages:
+                status.text(f"有 {len(failed_pages)} 页生成失败，正在重试...")
+                # 可以选择重试失败的页面
+                for page, err in failed_pages:
+                    st.warning(f"第 {page} 页生成失败")
 
             status.text("正在合并为完整 PPTX...")
             success, error = build_full_pptx(all_codes, ppt_path)
             status.empty()
             if success:
-                st.success("完整 PPT 生成完成！")
+                if failed_pages:
+                    st.success(f"PPT 生成完成！({len(failed_pages)} 页失败)")
+                else:
+                    st.success("完整 PPT 生成完成！")
                 st.rerun()
             else:
                 st.error("PPT 生成失败")
@@ -311,7 +410,7 @@ with tab_ppt:
                 has_pptx = os.path.exists(single_pptx)
 
                 with col:
-                    st.image(img_full, caption=f"第 {page} 页", use_container_width=True)
+                    st.image(img_full, caption=f"第 {page} 页", width='stretch')
 
                     if has_pptx:
                         st.caption("已生成")
@@ -323,22 +422,30 @@ with tab_ppt:
                         "AI 重新生成代码" if has_code else "AI 生成代码",
                         key=f"btn_ppt_page_{page}",
                     ):
-                        with st.spinner(f"正在生成第 {page} 页..."):
+                        with st.spinner(f"正在生成第 {page} 页（带测试验证）..."):
+                            # 生成代码
                             code = generate_slide_code(
                                 image_path=img_full,
                                 page_num=page,
                                 total_pages=total_pages,
                                 model=ppt_model,
                             )
-                            save_slide_code(proj_dir, page, code)
-                            ok, err = build_single_slide_pptx(
-                                code, single_pptx
+
+                            # 测试并生成PPTX（带重试）
+                            ok, err, final_code = build_single_slide_pptx_with_retry(
+                                code,
+                                single_pptx,
+                                max_retries=3,
+                                regenerate_func=generate_slide_code,
+                                regenerate_args=(img_full, page, total_pages, ppt_model),
                             )
+                            if ok:
+                                save_slide_code(proj_dir, page, final_code)
                         if ok:
                             st.success(f"第 {page} 页生成完成")
                             st.rerun()
                         else:
-                            st.error(f"第 {page} 页生成失败")
+                            st.error(f"第 {page} 页生成失败（已重试3次）")
                             with st.expander("错误详情"):
                                 st.code(err)
 
@@ -358,17 +465,24 @@ with tab_ppt:
                                     st.success("已保存")
                             with c2:
                                 if st.button("生成 PPT 页", key=f"btn_run_code_{page}", type="primary"):
-                                    save_slide_code(proj_dir, page, edited)
-                                    with st.spinner("正在生成..."):
-                                        ok, err = build_single_slide_pptx(
-                                            edited, single_pptx
-                                        )
-                                    if ok:
-                                        st.success(f"第 {page} 页 PPT 生成完成")
-                                        st.rerun()
+                                    # 先测试代码
+                                    test_ok, test_err = test_slide_code(edited)
+                                    if not test_ok:
+                                        st.error("代码测试失败，请检查语法错误")
+                                        with st.expander("测试错误详情"):
+                                            st.code(test_err)
                                     else:
-                                        st.error("生成失败")
-                                        st.code(err)
+                                        save_slide_code(proj_dir, page, edited)
+                                        with st.spinner("正在生成..."):
+                                            ok, err = build_single_slide_pptx(
+                                                edited, single_pptx
+                                            )
+                                        if ok:
+                                            st.success(f"第 {page} 页 PPT 生成完成")
+                                            st.rerun()
+                                        else:
+                                            st.error("生成失败")
+                                            st.code(err)
 
         st.divider()
 

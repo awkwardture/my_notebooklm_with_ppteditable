@@ -1,22 +1,23 @@
-"""Generate PPTX from infographic images using Gemini to write python-pptx code."""
+"""Generate PPTX from infographic images using MiniMax to write python-pptx code."""
 
 import os
 import re
 import traceback
 
-from src.gemini_client import generate_text_with_images
+from src.aliyun_client import generate_text_with_images
 from src.prompts import PPT_CODE_GEN_SYSTEM_PROMPT, PPT_CODE_GEN_USER_PROMPT
 
-DEFAULT_MODEL = "gemini-3-pro-preview"
+DEFAULT_MODEL = "qwen3.5-plus"
 
 # ── Shared boilerplate embedded in every generated script ──
 _SCRIPT_HEADER = '''\
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_LEGEND_POSITION
+from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.chart.data import CategoryChartData
 
 # ── Color Palette ──
@@ -35,6 +36,7 @@ ICON_BG  = RGBColor(0xE3, 0xE8, 0xED)
 ICON_FG  = RGBColor(0x54, 0x6E, 0x7A)
 FONT_NAME = "Microsoft YaHei"
 SLIDE_WIDTH = Inches(13.333)
+SLIDE_HEIGHT = Inches(7.5)
 HEADER_H    = Inches(0.75)
 SUBTITLE_Y  = Inches(0.95)
 
@@ -381,6 +383,91 @@ def build_single_slide_pptx(slide_code: str, output_path: str) -> tuple[bool, st
     return _exec_script(script)
 
 
+def test_slide_code(slide_code: str) -> tuple[bool, str]:
+    """Test if a slide code can be executed without errors.
+
+    Returns (success, error_message).
+    This is faster than building a full PPTX file.
+    """
+    # Apply patches first
+    patched_code = _patch_common_errors(slide_code)
+
+    # Use the same header as the full script (defines helper functions and colors)
+    # but remove the 'from pptx.chart.data import CategoryChartData' line since we add it
+    test_script = f'''
+{_SCRIPT_HEADER}
+
+# Create test presentation
+prs = Presentation()
+prs.slide_width = int(914400 * 13.333)
+prs.slide_height = int(914400 * 7.5)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+# Define the build function
+{patched_code}
+
+# Execute the build function
+build_slide(slide)
+'''
+    try:
+        exec(compile(test_script, "<test_slide>", "exec"), {"__builtins__": __builtins__})
+        return True, ""
+    except Exception:
+        return False, traceback.format_exc()
+
+
+def build_single_slide_pptx_with_retry(
+    slide_code: str,
+    output_path: str,
+    max_retries: int = 3,
+    regenerate_func: callable = None,
+    regenerate_args: tuple = None,
+) -> tuple[bool, str, str]:
+    """Generate a single-slide PPTX with automatic retry on failure.
+
+    Args:
+        slide_code: The python-pptx code for the slide
+        output_path: Where to save the PPTX file
+        max_retries: Maximum number of retry attempts (default 3)
+        regenerate_func: Optional function to regenerate code on failure
+        regenerate_args: Arguments to pass to regenerate_func
+
+    Returns:
+        (success, error_message, final_code)
+    """
+    current_code = slide_code
+
+    for attempt in range(max_retries):
+        # First test the code
+        test_ok, test_error = test_slide_code(current_code)
+
+        if test_ok:
+            # Code is valid, build the PPTX
+            success, error = build_single_slide_pptx(current_code, output_path)
+            if success:
+                return True, "", current_code
+            # If build failed despite test passing, return the error
+            return False, error, current_code
+
+        # Test failed, try to fix or regenerate
+        print(f"[Slide test] Attempt {attempt + 1}/{max_retries} failed:")
+        print(test_error[:500])  # Print first 500 chars of error
+
+        if attempt < max_retries - 1 and regenerate_func is not None:
+            # Try to regenerate the code
+            print(f"[Slide test] Regenerating code...")
+            try:
+                current_code = regenerate_func(*regenerate_args)
+            except Exception as e:
+                print(f"[Slide test] Regeneration failed: {e}")
+                return False, f"Regeneration failed: {e}", current_code
+        else:
+            # No more retries or no regenerate function
+            return False, test_error, current_code
+
+    return False, "Max retries exceeded", current_code
+
+
 def build_full_pptx(slide_codes: dict[int, str], output_path: str) -> tuple[bool, str]:
     """Generate a full PPTX from multiple slide codes.
 
@@ -405,6 +492,36 @@ def build_full_pptx(slide_codes: dict[int, str], output_path: str) -> tuple[bool
 
 def _patch_common_errors(code: str) -> str:
     """Auto-fix common mistakes the AI makes in generated python-pptx code."""
+    # Fix strings with embedded quotes - common in Chinese text
+    # Pattern: .text = "content with "quotes" inside" causes syntax error
+    lines = code.split('\n')
+    fixed_lines = []
+    for line in lines:
+        # Check for .text = "..." or p.text = "..." patterns
+        if re.search(r'[pf][_\d]*\.text\s*=\s*"', line):
+            # Find positions of all ASCII quotes in the line
+            quote_positions = [i for i, c in enumerate(line) if c == '"']
+            if len(quote_positions) >= 3:  # 3+ quotes means embedded quotes
+                # Get the text assignment part
+                match = re.search(r'[pf][_\d]*\.text\s*=\s*', line)
+                if match:
+                    start_pos = match.end()
+                    # Find first quote after .text =
+                    first_quote = line.find('"', start_pos)
+                    # Find last quote in line (the real closing delimiter)
+                    last_quote = line.rfind('"')
+                    if first_quote >= 0 and last_quote > first_quote:
+                        # Content between first and last quote needs fixing
+                        content = line[first_quote+1:last_quote]
+                        # Escape all quotes in content (both ASCII and Chinese)
+                        content = content.replace('\\', '\\\\')  # First escape existing backslashes
+                        content = content.replace('"', '\\"')   # Escape ASCII quotes
+                        content = content.replace('"', '\\"')   # Escape Chinese left quote
+                        content = content.replace('"', '\\"')   # Escape Chinese right quote
+                        line = line[:first_quote] + '"' + content + '"' + line[last_quote+1:]
+        fixed_lines.append(line)
+    code = '\n'.join(fixed_lines)
+
     # .line.background() -> .line.fill.background()
     code = re.sub(r'\.line\.background\(\)', '.line.fill.background()', code)
     # .line.no_fill() -> .line.fill.background()
@@ -421,6 +538,150 @@ def _patch_common_errors(code: str) -> str:
             return m.group(0)
         return f'MSO_SHAPE.ROUNDED_RECTANGLE'
     code = re.sub(r'MSO_SHAPE\.([A-Z_0-9]+)', _fix_shape, code)
+
+    # Fix add_group_shape() - this API doesn't accept shape arguments
+    code = re.sub(
+        r'(\w+)\s*=\s*slide\.shapes\.add_group_shape\([^)]+\)',
+        r'# REMOVED: group_shape not supported\n    pass',
+        code
+    )
+    code = re.sub(
+        r'slide\.shapes\.add_group_shape\([^)]+\)',
+        r'pass  # group_shape not supported',
+        code
+    )
+
+    # Fix axis_labels -> tick_labels
+    code = re.sub(r'\.axis_labels\b', '.tick_labels', code)
+
+    # Fix tick_labels.delete() - should use has_tick_labels = False on axis
+    code = re.sub(r'\.tick_labels\.delete\(\)', '.has_tick_labels = False', code)
+
+    # Fix line.fore_color -> line.color
+    code = re.sub(r'\.line\.fore_color\b', '.line.color', code)
+
+    # Add missing imports if used
+    if 'MSO_ANCHOR' in code and 'from pptx.enum.text import MSO_ANCHOR' not in code:
+        code = 'from pptx.enum.text import MSO_ANCHOR\n' + code
+    if 'XL_LEGEND_POSITION' in code and 'from pptx.enum.chart import XL_LEGEND_POSITION' not in code:
+        code = 'from pptx.enum.chart import XL_LEGEND_POSITION\n' + code
+
+    # Fix MsoArrowheadLength/MsoArrowheadWidth - these don't exist in python-pptx
+    # Comment out arrowhead settings
+    code = re.sub(
+        r'(\s*)\w+\.end_arrowhead\.[^\n]+',
+        r'\1# arrowhead settings not supported',
+        code
+    )
+    code = re.sub(
+        r'(\s*)\w+\.start_arrowhead\.[^\n]+',
+        r'\1# arrowhead settings not supported',
+        code
+    )
+
+    # Fix p.add_run("text") - add_run() takes no arguments in python-pptx
+    # Correct: run = p.add_run(); run.text = "content"
+    def _fix_add_run(m):
+        indent = m.group(1)
+        var = m.group(2)
+        text = m.group(3)
+        return f'{indent}{var} = p.add_run()\n{indent}{var}.text = "{text}"'
+    code = re.sub(
+        r'(\s*)(\w+)\s*=\s*p[\d_]*\.add_run\("([^"]*)"\)',
+        _fix_add_run,
+        code
+    )
+
+    # Always replace MSO_DASH_STYLE with MSO_LINE_DASH_STYLE (correct name)
+    code = code.replace('MSO_DASH_STYLE', 'MSO_LINE_DASH_STYLE')
+
+    # Fix MSO_SHAPE_TYPE incorrect usage
+    code = code.replace('MSO_SHAPE_TYPE.STRAIGHT', 'MSO_CONNECTOR.STRAIGHT')
+    code = re.sub(r'MSO_SHAPE_TYPE\.[A-Z_]+', 'MSO_CONNECTOR.STRAIGHT', code)
+
+    # Fix add_connector with invalid types (MSO_SHAPE, MSO_CONNECTOR_TYPE, etc.)
+    # Valid connector types: MSO_CONNECTOR.STRAIGHT, ELBOW, ELBOW_ARROW
+    # First, replace MSO_SHAPE.LINE specifically (common mistake)
+    code = code.replace('MSO_SHAPE.LINE', 'MSO_CONNECTOR.STRAIGHT')
+    code = re.sub(
+        r'add_connector\(\s*MSO_SHAPE\.[A-Z_]+',
+        'add_connector(MSO_CONNECTOR.STRAIGHT',
+        code
+    )
+    code = re.sub(
+        r'add_connector\(\s*MSO_CONNECTOR_TYPE\.[A-Z_]+',
+        'add_connector(MSO_CONNECTOR.STRAIGHT',
+        code
+    )
+    code = re.sub(
+        r'add_connector\(\s*MSO_AUTO_SHAPE_TYPE\.[A-Z_]+',
+        'add_connector(MSO_CONNECTOR.STRAIGHT',
+        code
+    )
+
+    # Fix incorrect tuple unpacking in enumerate: for j, (a, b) in enumerate(row):
+    # This pattern is wrong when row is a flat list, not a list of tuples
+    # Fix: for j, item in enumerate(row): a, b = item
+    def _fix_enumerate_unpack(m):
+        indent = m.group(1)
+        var1 = m.group(2)
+        var2 = m.group(3)
+        var3 = m.group(4)
+        row_var = m.group(5)
+        return f'{indent}for {var1}, item in enumerate({row_var}):{indent}    {var2}, {var3} = item'
+    code = re.sub(
+        r'(\s*)for\s+(\w+),\s*\((\w+),\s*(\w+)\)\s+in\s+enumerate\((\w+)\):',
+        _fix_enumerate_unpack,
+        code
+    )
+
+    # Fix p.bullet usage - python-pptx paragraphs don't have .bullet attribute
+    # Remove/comment out any .bullet related code
+    code = re.sub(
+        r'(\s*)[pf](_\w+)?\.bullet\.[^\n]+',
+        r'\1# bullet not supported in python-pptx',
+        code
+    )
+    code = re.sub(
+        r'(\s*)[pf](_\w+)?\.bullet\s*=[^\n]+',
+        r'\1# bullet not supported in python-pptx',
+        code
+    )
+
+    # Fix add_line - python-pptx doesn't have add_line, use add_connector or add_shape
+    # Convert add_line(x1, y1, x2, y2) to add_connector(MSO_CONNECTOR.STRAIGHT, x1, y1, x2-x1, y2-y1)
+    def _fix_add_line(m):
+        indent = m.group(1)
+        var = m.group(2) if m.group(2) else ''
+        x1 = m.group(3)
+        y1 = m.group(4)
+        x2 = m.group(5)
+        y2 = m.group(6)
+        if var:
+            return f"{indent}{var} = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, {x1}, {y1}, {x2}, {y2})"
+        else:
+            return f"{indent}slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, {x1}, {y1}, {x2}, {y2})"
+    code = re.sub(
+        r'(\s*)(\w+\s*=\s*)?slide\.shapes\.add_line\(([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)',
+        _fix_add_line,
+        code
+    )
+
+    # Fix shape.adjustments - commenting out since it often causes IndexError
+    # Only certain shapes (like rounded rectangle) have adjustments
+    # Need to add pass statement to avoid empty try blocks
+    def _fix_adjustments(m):
+        indent = m.group(1)
+        return f'{indent}# adjustments not supported\n{indent}pass'
+    code = re.sub(
+        r'(\s*)\w+\.adjustments\[\d+\]\s*=[^\n]+',
+        _fix_adjustments,
+        code
+    )
+
+    # Fix .fill.fore_color -> .fill.fore_color (correct)
+    # No change needed, already correct
+
     return code
 
 

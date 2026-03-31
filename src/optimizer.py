@@ -1,7 +1,7 @@
-from src.gemini_client import generate_text
+from src.minimax_client import generate_text
 from src.prompts import OPTIMIZE_SYSTEM_PROMPT, STYLE_SYSTEM_PROMPT
 
-DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "MiniMax-M2.7"
 
 
 def optimize_document(raw_md: str, model: str = DEFAULT_MODEL) -> tuple[str, str]:
