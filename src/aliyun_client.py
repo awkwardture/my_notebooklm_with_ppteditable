@@ -4,14 +4,17 @@ Uses OpenAI-compatible API format.
 """
 
 import base64
+import os
 from pathlib import Path
 from typing import List, Optional
 
 import requests
+from dotenv import load_dotenv
 
+load_dotenv()
 
 # Aliyun API Configuration
-ALIYUN_API_KEY = "sk-your-aliyun-api-key-here"
+ALIYUN_API_KEY = os.getenv("ALIYUN_API_KEY", "sk-your-aliyun-api-key-here")
 ALIYUN_BASE_URL = "https://coding.dashscope.aliyuncs.com"
 DEFAULT_MODEL = "qwen3.5-plus"
 

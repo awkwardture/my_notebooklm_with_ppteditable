@@ -17,10 +17,14 @@
 ## 技术栈
 
 - **前端/应用框架**: Streamlit
-- **AI 模型**: Google Gemini
-  - `gemini-3-flash-preview` — 文本优化 & 风格生成
-  - `gemini-3-pro-image-preview` — 信息图生成
-  - `gemini-3-pro-preview` — 图片分析 & PPT 代码生成
+- **文本生成模型**:
+  - MiniMax-M2.7-highspeed — 文本优化（高速）
+  - GLM-5 / Qwen3-Max — 阿里云模型，文本优化
+- **PPT 代码生成**:
+  - Qwen3.5-Plus / Qwen3-Max — 阿里云视觉模型，图片分析 & PPT 代码生成
+- **图片生成**:
+  - ComfyUI (本地) — Z-Image-Turbo / Qwen Image 2512
+  - MiniMax API (云端) — 图片生成
 - **PDF 合成**: img2pdf + Pillow
 - **PPT 生成**: python-pptx (AI 生成代码 → 动态执行)
 
@@ -33,19 +37,40 @@
 │   ├── image_generator.py # 信息图生成
 │   ├── pdf_builder.py     # PDF 合并
 │   ├── ppt_generator.py   # PPT 代码生成 & 执行
-│   ├── gemini_client.py   # Gemini API 客户端 (文本/图片/多模态)
+│   ├── minimax_client.py  # MiniMax API 客户端
+│   ├── aliyun_client.py   # 阿里云 API 客户端
+│   ├── comfyui_client.py  # ComfyUI 本地图片生成
 │   └── prompts.py         # Prompt 模板
-├── docs/
-│   └── 参考脚本/
-│       └── generate_ppt.py # PPT 生成参考脚本
 ├── projects/              # 用户项目数据 (自动生成)
 ├── requirements.txt
-└── .env.example
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── docker-deploy.sh       # Docker 部署脚本
+└── start.sh               # 一键启动脚本
 ```
 
 ## 快速启动
 
-### 1. 克隆项目
+### 方式一：Docker 部署（推荐）
+
+```bash
+# 1. 初始化设置
+./docker-deploy.sh setup
+
+# 2. 编辑.env 文件配置 API Keys
+
+# 3. 一键启动
+./start.sh
+```
+
+访问 http://localhost:8501
+
+详细 Docker 部署说明请参考 [DOCKER.md](DOCKER.md)
+
+### 方式二：本地运行
+
+#### 1. 克隆项目
 
 ```bash
 git clone <repo-url>
@@ -72,13 +97,18 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-编辑 `.env` 文件，填入你的 Gemini API Key：
+编辑 `.env` 文件，填入你的 API Keys：
 
 ```
-GEMINI_API_KEY=your_api_key_here
-```
+# MiniMax API Key
+MINIMAX_API_KEY=sk-your-minimax-api-key-here
 
-> API Key 获取地址: https://aistudio.google.com/apikey
+# Aliyun API Key
+ALIYUN_API_KEY=sk-your-aliyun-api-key-here
+
+# ComfyUI 服务地址 (本地图片生成)
+COMFYUI_URL=http://127.0.0.1:8188
+```
 
 ### 5. 启动服务
 

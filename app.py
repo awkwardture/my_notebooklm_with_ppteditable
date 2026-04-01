@@ -67,11 +67,23 @@ with st.sidebar:
 4. **导出** — 合并为 PDF / AI 生成可编辑 PPT
     """)
 
-    text_model = "MiniMax-M2.7"
-    ppt_model = "qwen3.5-plus"
+    # 导入优化稿模型配置
+    from src.optimizer import TEXT_MODELS
+
+    # 模型设置
+    st.sidebar.subheader("模型设置")
+
+    # 优化稿模型选择
+    text_model_options = {v["name"]: k for k, v in TEXT_MODELS.items()}
+    selected_text_model_name = st.sidebar.selectbox(
+        "优化稿模型",
+        options=list(text_model_options.keys()),
+        index=0,  # 默认选择 MiniMax-M2.7
+        help="选择生成优化稿和风格描述的模型",
+    )
+    text_model = text_model_options[selected_text_model_name]
 
     # 图片生成模型选择
-    st.sidebar.subheader("模型设置")
     image_model_options = {v["name"]: k for k, v in IMAGE_MODELS.items()}
     selected_image_model_name = st.sidebar.selectbox(
         "图片生成模型",
@@ -82,11 +94,31 @@ with st.sidebar:
     image_model = image_model_options[selected_image_model_name]
 
     # PPT 代码生成模型
-    ppt_model = st.sidebar.selectbox(
+    from src.ppt_generator import PPT_MODELS
+    ppt_model_options = {v["name"]: k for k, v in PPT_MODELS.items()}
+    selected_ppt_model_name = st.sidebar.selectbox(
         "PPT 代码生成模型",
-        options=["qwen3.5-plus", "qwen3-plus"],
+        options=list(ppt_model_options.keys()),
         index=0,
         help="选择生成 PPT 代码的 Vision 模型",
+    )
+    ppt_model = ppt_model_options[selected_ppt_model_name]
+
+    # 执行模式选择：图片生成和 PPT 生成独立设置
+    st.sidebar.subheader("执行模式")
+    image_execution_mode = st.sidebar.radio(
+        "图片生成",
+        options=["并行", "串行"],
+        index=0,
+        key="image_mode",
+        help="并行：同时生成所有图片（速度快）；串行：逐页生成（节省资源）",
+    )
+    ppt_execution_mode = st.sidebar.radio(
+        "PPT 生成",
+        options=["并行", "串行"],
+        index=0,
+        key="ppt_mode",
+        help="并行：同时生成所有 PPT 页（速度快）；串行：逐页生成（节省资源）",
     )
 
 # ── Helper paths ─────────────────────────────────────────────────────
@@ -202,12 +234,20 @@ if current_opt:
             except Exception as e:
                 return (i, False, str(e))
 
-        # 并行生成图片
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            futures = list(executor.map(generate_single_image, enumerate(slides)))
-            completed = 0
-            for i, success, error in futures:
-                completed += 1
+        if image_execution_mode == "并行":
+            # 并行生成图片（多 agent 同时执行）
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = list(executor.map(generate_single_image, enumerate(slides)))
+                completed = 0
+                for i, success, error in futures:
+                    completed += 1
+                    status.text(f"已完成 {completed}/{len(slides)} 页")
+                    progress.progress(completed / len(slides))
+        else:
+            # 串行生成图片（逐页执行）
+            for i, slide in enumerate(slides):
+                result = generate_single_image((i, slide))
+                completed = i + 1
                 status.text(f"已完成 {completed}/{len(slides)} 页")
                 progress.progress(completed / len(slides))
 
@@ -348,16 +388,43 @@ with tab_ppt:
 
                 return (page, None, "超过最大重试次数")
 
-            # 并行生成 PPT 代码（带测试）
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                futures = list(executor.map(generate_and_test_slide, enumerate(ppt_img_files)))
-                completed = 0
-                for page, code, error in futures:
-                    completed += 1
-                    status.text(f"已完成 {completed}/{total_pages} 页")
-                    progress.progress(completed / total_pages)
+            # 并行/串行生成 PPT 代码
+            if ppt_execution_mode == "并行":
+                # 并行生成 PPT 代码（多 agent 同时执行）
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = list(executor.map(generate_and_test_slide, enumerate(ppt_img_files)))
+                    completed = 0
+                    for page, code, error in futures:
+                        completed += 1
+                        if code:
+                            status.text(f"第 {page} 页：生成成功 ✅ ({completed}/{total_pages})")
+                        else:
+                            status.text(f"第 {page} 页：生成失败 ❌ ({completed}/{total_pages})")
+                        progress.progress(completed / total_pages)
+                        if code:
+                            # 再次验证并生成 PPTX
+                            single_path = get_single_pptx_path(proj_dir, page)
+                            success, err, final_code = build_single_slide_pptx_with_retry(
+                                code, single_path, max_retries=1
+                            )
+                            if success:
+                                save_slide_code(proj_dir, page, final_code)
+                                all_codes[page] = final_code
+                                status.text(f"第 {page} 页：PPTX 生成成功 ✅ ({completed}/{total_pages})")
+                            else:
+                                failed_pages.append((page, err))
+                                status.text(f"第 {page} 页：PPTX 生成失败 ❌ ({completed}/{total_pages})")
+                        else:
+                            failed_pages.append((page, error))
+            else:
+                # 串行生成 PPT 代码（逐页执行）
+                for i, img_file in enumerate(ppt_img_files):
+                    page = i + 1
+                    status.text(f"正在生成第 {page} 页... ({page}/{total_pages})")
+                    result = generate_and_test_slide((i, img_file))
+                    page, code, error = result
+                    progress.progress(page / total_pages)
                     if code:
-                        # 再次验证并生成PPTX
                         single_path = get_single_pptx_path(proj_dir, page)
                         success, err, final_code = build_single_slide_pptx_with_retry(
                             code, single_path, max_retries=1
@@ -365,10 +432,13 @@ with tab_ppt:
                         if success:
                             save_slide_code(proj_dir, page, final_code)
                             all_codes[page] = final_code
+                            status.text(f"第 {page} 页：生成成功 ✅ ({page}/{total_pages})")
                         else:
                             failed_pages.append((page, err))
+                            status.text(f"第 {page} 页：生成失败 ❌ ({page}/{total_pages})")
                     else:
                         failed_pages.append((page, error))
+                        status.text(f"第 {page} 页：生成失败 ❌ ({page}/{total_pages})")
 
             if failed_pages:
                 status.text(f"有 {len(failed_pages)} 页生成失败，正在重试...")

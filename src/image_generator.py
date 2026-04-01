@@ -9,9 +9,13 @@ IMAGE_MODELS = {
         "name": "ComfyUI Z-Image-Turbo (最快，推荐)",
         "description": "本地 ComfyUI，使用 Z-Image-Turbo 模型，速度快，效果好",
     },
-    "flux": {
-        "name": "ComfyUI Flux (高质量)",
-        "description": "本地 ComfyUI，使用 Flux 模型，质量高但速度慢",
+    "qwen_image_2512": {
+        "name": "ComfyUI Qwen Image 2512 (高质量中文)",
+        "description": "本地 ComfyUI，使用 Qwen Image 2512 模型，中文支持最好，50 步",
+    },
+    "qwen_image_fast": {
+        "name": "ComfyUI Qwen Image 2512 LoRA (快速)",
+        "description": "本地 ComfyUI，使用 Qwen Image 2512 LoRA 版本，4 步快速生成",
     },
     "minimax": {
         "name": "MiniMax API (云端)",
@@ -36,7 +40,7 @@ def generate_slide_image(
         style_desc: Style description
         page_num: Current page number
         total_pages: Total number of pages
-        model: Model to use - "z_image_turbo", "flux", or "minimax"
+        model: Model to use - "z_image_turbo", "qwen_image_2512", "qwen_image_fast", or "minimax"
 
     Returns:
         Generated image as bytes, or None if failed
@@ -77,15 +81,33 @@ def generate_slide_image(
             height=1080,
             steps=20,
             use_z_image_turbo=True,
+            use_qwen_2512=False,
+            use_qwen_fast=False,
+            use_flux=False,
         )
-    elif model == "flux":
-        # 使用 ComfyUI Flux (高质量但慢)
+    elif model == "qwen_image_2512":
+        # 使用 ComfyUI Qwen Image 2512 (高质量中文)
         return generate_image_comfyui(
             prompt=prompt,
             width=1920,
             height=1080,
-            steps=20,
-            use_flux=True,
+            steps=50,
+            use_z_image_turbo=False,
+            use_qwen_2512=True,
+            use_qwen_fast=False,
+            use_flux=False,
+        )
+    elif model == "qwen_image_fast":
+        # 使用 ComfyUI Qwen Image 2512 LoRA (快速)
+        return generate_image_comfyui(
+            prompt=prompt,
+            width=1920,
+            height=1080,
+            steps=4,
+            use_z_image_turbo=False,
+            use_qwen_2512=False,
+            use_qwen_fast=True,
+            use_flux=False,
         )
     elif model == "minimax":
         # 使用 MiniMax API (云端)
@@ -103,4 +125,7 @@ def generate_slide_image(
             height=1080,
             steps=20,
             use_z_image_turbo=True,
+            use_qwen_2512=False,
+            use_qwen_fast=False,
+            use_flux=False,
         )

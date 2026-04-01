@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # NotebookLM to PPT 应用
+  notebooklm-ppt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notebooklm-ppt
+    ports:
+      - "8501:8501"
+    environment:
+      # API Keys - 请根据实际情况修改
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - ALIYUN_API_KEY=${ALIYUN_API_KEY:-}
+      # ComfyUI 服务地址 - 如果 ComfyUI 也在 Docker 中运行，使用服务名
+      - COMFYUI_URL=${COMFYUI_URL:-http://host.docker.internal:8188}
+    volumes:
+      # 持久化项目文件
+      - ./projects:/app/projects
+      # 持久化.env 文件
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    networks:
+      - notebooklm-network
+    extra_hosts:
+      # 允许访问宿主的 ComfyUI 服务
+      - "host.docker.internal:host-gateway"
+
+  # 可选：ComfyUI 服务（如果需要本地运行图片生成）
+  # 注意：ComfyUI 需要 GPU 支持，如果没有 GPU 请注释掉
+  # comfyui:
+  #   image: yanwk/comfyui-boot:latest
+  #   container_name: comfyui
+  #   ports:
+  #     - "8188:8188"
+  #   volumes:
+  #     - ./comfyui/models:/home/runner/ComfyUI/models
+  #     - ./comfyui/output:/home/runner/ComfyUI/output
+  #   environment:
+  #     - CLI_ARGS=--listen
+  #   restart: unless-stopped
+  #   networks:
+  #     - notebooklm-network
+  #   # 如果使用 NVIDIA GPU，取消下面的注释
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: all
+  #   #           capabilities: [gpu]
+
+networks:
+  notebooklm-network:
+    driver: bridge

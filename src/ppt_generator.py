@@ -4,10 +4,20 @@ import os
 import re
 import traceback
 
-from src.aliyun_client import generate_text_with_images
+from src.aliyun_client import generate_text_with_images as generate_text_aliyun
 from src.prompts import PPT_CODE_GEN_SYSTEM_PROMPT, PPT_CODE_GEN_USER_PROMPT
 
 DEFAULT_MODEL = "qwen3.5-plus"
+
+# PPT 代码生成模型配置（阿里云百炼平台）
+PPT_MODELS = {
+    "qwen3.5-plus": {
+        "name": "Qwen3.5-Plus",
+    },
+    "kimi-k2.5": {
+        "name": "Kimi-K2.5",
+    },
+}
 
 # ── Shared boilerplate embedded in every generated script ──
 _SCRIPT_HEADER = '''\
@@ -319,17 +329,20 @@ def generate_slide_code(
     total_pages: int,
     model: str = DEFAULT_MODEL,
 ) -> str:
-    """Send an infographic image to Gemini and get back python-pptx code."""
+    """Send an infographic image to Vision model and get back python-pptx code."""
     user_prompt = PPT_CODE_GEN_USER_PROMPT.format(
         page_num=page_num,
         total_pages=total_pages,
     )
-    response = generate_text_with_images(
+
+    # 所有 PPT 模型都使用阿里云 API
+    response = generate_text_aliyun(
         model=model,
         system_prompt=PPT_CODE_GEN_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         image_paths=[image_path],
     )
+
     return _extract_code(response)
 
 

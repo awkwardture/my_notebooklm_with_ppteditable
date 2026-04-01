@@ -1,6 +1,7 @@
 import os
 import base64
 import re
+import time
 import requests
 from dotenv import load_dotenv
 
@@ -92,13 +93,14 @@ def get_client() -> MiniMaxClient:
     return _client
 
 
-def generate_text(model: str, system_prompt: str, user_prompt: str) -> str:
+def generate_text(model: str, system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
     """Generate text using MiniMax API.
 
     Args:
         model: The model to use (e.g., 'minimax-text-01', 'abab6.5s-chat')
         system_prompt: System instruction for the model
         user_prompt: User's input prompt
+        max_retries: Maximum number of retries for 529 errors
 
     Returns:
         Generated text response
@@ -108,13 +110,53 @@ def generate_text(model: str, system_prompt: str, user_prompt: str) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    response = client.chat_completion(
-        model=model,
-        messages=messages,
-        temperature=0.7,
-    )
-    raw_content = response["choices"][0]["message"]["content"]
-    return _clean_thinking_content(raw_content)
+
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            response = client.chat_completion(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+            )
+
+            # Handle cases where choices might be null or missing
+            choices = response.get("choices")
+            if choices is None or len(choices) == 0:
+                # Try to get reasoning_content from base_resp if available
+                base_resp = response.get("base_resp", {})
+                if base_resp.get("status_code", 0) != 0:
+                    raise Exception(f"MiniMax API error: {base_resp.get('status_msg')}")
+                # If reasoning_model returns reasoning_content
+                reasoning = response.get("reasoning_content") or response.get("reasoning_content", "")
+                if reasoning:
+                    return _clean_thinking_content(reasoning)
+                raise Exception(f"MiniMax API returned no response: {response}")
+
+            raw_content = choices[0]["message"]["content"]
+            return _clean_thinking_content(raw_content)
+
+        except requests.exceptions.HTTPError as e:
+            last_error = e
+            if e.response is not None and e.response.status_code == 529:
+                # 529 = overloaded, retry with exponential backoff
+                wait_time = 2 ** attempt  # 2s, 4s, 8s
+                print(f"[MiniMax] 529 过载错误，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"[MiniMax] 错误：{e}，{wait_time}秒后重试...")
+                time.sleep(wait_time)
+            else:
+                raise
+
+    # All retries exhausted
+    raise Exception(f"MiniMax API 请求失败，已重试 {max_retries} 次：{last_error}")
 
 
 def generate_text_with_images(
