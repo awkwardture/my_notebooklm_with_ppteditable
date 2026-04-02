@@ -51,6 +51,27 @@ Create visual layout that represents the slide content with:
 
 Page {page_num} of {total_pages}"""
 
+# 新增：基于模板渲染的图片生成 Prompt
+TEMPLATE_BASED_IMAGE_PROMPT = """专业信息图风格 PPT 背景图片，16:9 比例。
+
+## 风格要求
+{style_template}
+
+## 页面内容变量
+- 标题：{title}
+- 副标题：{subtitle}
+- 内容要点：{content_points}
+- 关键数据：{key_data}
+
+## 设计建议
+- 根据页面布局类型 ({layout_type}) 设计合适的视觉层次
+- 标题区域留白充足，便于后期添加文字
+- 内容区域用图形元素（图标、图表、装饰线条）进行视觉化呈现
+- 保持整体风格统一，配色专业
+- 不要包含任何实际文字，只需视觉元素
+
+第 {page_num} 页，共 {total_pages} 页"""
+
 PPT_CODE_GEN_SYSTEM_PROMPT = """你是一位 python-pptx 编程专家。你的任务是根据信息图图片，生成对应的 python-pptx 代码来重现该页幻灯片。
 
 ## 可用的辅助函数

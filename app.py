@@ -2,9 +2,12 @@ import os
 import shutil
 import concurrent.futures
 import streamlit as st
-from src.optimizer import optimize_document, parse_slides
+from src.optimizer import optimize_document, parse_slides, optimize_document_with_variables, extract_page_variables
 from src.image_generator import generate_slide_image, IMAGE_MODELS, DEFAULT_MODEL as DEFAULT_IMAGE_MODEL
 from src.pdf_builder import build_pdf
+from src.template_renderer import list_templates, list_layout_categories, render_template, get_template_manager, get_layout_category_cn
+from src.template_image_generator import generate_prompt_from_template
+import json
 from src.ppt_generator import (
     generate_slide_code, build_single_slide_pptx, build_single_slide_pptx_with_retry,
     build_full_pptx, save_slide_code, load_slide_code, load_all_slide_codes,
@@ -129,6 +132,67 @@ img_dir = os.path.join(proj_dir, "生成的图片")
 pdf_path = os.path.join(proj_dir, "最终文档", f"{project_name}.pdf")
 ppt_path = os.path.join(proj_dir, "最终文档", f"{project_name}.pptx")
 
+# 模板配置文件路径
+template_config_path = os.path.join(proj_dir, "优化PP页文档", "template_config.json")
+page_templates_path = os.path.join(os.path.dirname(__file__), "page_template", "page_templates.json")
+page_templates_cache = None
+page_templates_mtime = 0
+
+
+def load_page_templates() -> list:
+    """加载所有页面模板"""
+    global page_templates_cache, page_templates_mtime
+    # 检查文件是否变化
+    current_mtime = os.path.getmtime(page_templates_path) if os.path.exists(page_templates_path) else 0
+    if page_templates_cache is not None and page_templates_mtime == current_mtime:
+        return page_templates_cache
+    if os.path.exists(page_templates_path):
+        with open(page_templates_path, "r", encoding="utf-8") as f:
+            page_templates_cache = json.load(f)
+        page_templates_mtime = current_mtime
+        return page_templates_cache
+    return []
+
+
+def save_page_style(project_name: str, page_idx: int, style_desc: str, template_id: str = ""):
+    """保存某页的风格描述"""
+    config_path = os.path.join(PROJECTS_DIR, project_name, "优化PP页文档", "page_styles.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {"pages": {}}
+    data["pages"][str(page_idx)] = {"style_description": style_desc, "template_id": template_id}
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_page_styles(project_name: str) -> dict:
+    """加载项目的页面风格配置"""
+    config_path = os.path.join(PROJECTS_DIR, project_name, "优化PP页文档", "page_styles.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"pages": {}}
+
+
+def read_template_config() -> dict:
+    """读取模板配置"""
+    import json
+    if os.path.exists(template_config_path):
+        with open(template_config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"selected_template": "", "page_templates": {}}
+
+
+def write_template_config(config: dict):
+    """写入模板配置"""
+    import json
+    os.makedirs(os.path.dirname(template_config_path), exist_ok=True)
+    with open(template_config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
 
 def read_file(path: str) -> str:
     if os.path.exists(path):
@@ -175,22 +239,182 @@ with col2:
 # ── Step 2: Optimized document & style ───────────────────────────────
 st.header("Step 2: 优化稿 & 风格描述")
 
-tab_opt, tab_style = st.tabs(["优化稿", "风格描述"])
+# 读取模板配置（保留用于兼容）
+template_config = read_template_config()
+
+# 加载所有页面模板
+page_templates = load_page_templates()
+
+# 加载项目的页面风格配置（每次都重新加载，确保获取最新值）
+page_styles = load_page_styles(project_name)
+
+# 解析优化稿为单页
+current_opt = read_file(opt_path)
+slides = parse_slides(current_opt) if current_opt else []
+
+tab_opt, tab_style = st.tabs(["优化稿 (按页)", "风格描述"])
 
 # 使用时间戳作为动态 key，确保每次生成后都能刷新显示
-opt_key = f"opt_text_{os.path.getmtime(opt_path) if os.path.exists(opt_path) else 0}"
 style_key = f"style_text_{os.path.getmtime(style_path) if os.path.exists(style_path) else 0}"
 
 with tab_opt:
-    opt_text = st.text_area(
-        "优化稿 (可编辑)",
-        value=read_file(opt_path),
-        height=400,
-        key=opt_key,
-    )
-    if st.button("保存优化稿"):
-        write_file(opt_path, opt_text)
-        st.success("已保存")
+    if not slides:
+        st.info("请先生成优化稿")
+    else:
+        st.info(f"共 {len(slides)} 页，请在下方为每页选择合适的 PPT 风格模板")
+
+        # 全局风格描述
+        global_style = read_file(style_path)
+        st.subheader("全局风格描述")
+        st.caption("以下风格描述适用于所有页面，除非为特定页面选择了不同的模板")
+        st.markdown(global_style[:500] + "..." if len(global_style) > 500 else global_style)
+
+        st.divider()
+        st.subheader("逐页编辑")
+
+        # 为每页显示独立的编辑器
+        for i, slide in enumerate(slides):
+            page_idx = i + 1
+            page_key = str(page_idx)
+
+            # 获取该页已保存的风格配置
+            saved_style = page_styles.get("pages", {}).get(page_key, {})
+            current_style_desc = saved_style.get("style_description", "")
+            selected_template_id = saved_style.get("template_id", "")
+
+            # 检查是否有 pending 的风格描述（刚选择的模板）
+            pending_key = f"pending_page_style_{page_idx}"
+            text_area_key = f"page_style_{page_idx}"
+            # 使用版本号来强制刷新 text_area
+            version_key = f"page_style_version_{page_idx}"
+            if pending_key in st.session_state:
+                current_style_desc = st.session_state[pending_key]
+                del st.session_state[pending_key]
+                # 增加版本号，强制 text_area 使用新的 key
+                st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+                st.toast(f"已更新第 {page_idx} 页风格描述", icon="✅")
+
+            # 获取当前版本号
+            style_version = st.session_state.get(version_key, 0)
+            # 使用带版本号的 key，确保更新时创建新的 widget
+            dynamic_text_key = f"page_style_{page_idx}_v{style_version}"
+
+            # 使用 expander 折叠每页内容
+            with st.expander(f"第 {page_idx} 页", expanded=(page_idx == 1)):
+                # 页面内容
+                st.markdown(slide)
+
+                # 风格描述编辑
+                style_label = "风格描述（可编辑）"
+                if selected_template_id:
+                    style_label = f"风格描述 ✅ 已选模板"
+
+                page_style = st.text_area(
+                    style_label,
+                    value=current_style_desc if current_style_desc else global_style,
+                    height=200,
+                    key=dynamic_text_key,
+                )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("保存该页风格", key=f"save_style_{page_idx}"):
+                        save_page_style(project_name, page_idx, page_style, selected_template_id)
+                        st.success(f"第 {page_idx} 页风格已保存")
+                        st.rerun()
+
+                with col2:
+                    # 模板选择按钮
+                    if st.button("选择模板", key=f"select_template_{page_idx}"):
+                        st.session_state[f"show_template_selector_{page_idx}"] = True
+
+                # 显示模板选择器
+                if st.session_state.get(f"show_template_selector_{page_idx}", False):
+                    st.divider()
+                    st.markdown(f"### 第 {page_idx} 页 - 选择模板")
+
+                    # 获取该页的布局类型（用于筛选）
+                    # 简单判断：如果有项目符号就是列表页，有表格就是表格页，等等
+                    slide_lower = slide.lower()
+                    layout_filter = "全部"
+                    if "表格" in slide or "table" in slide_lower:
+                        layout_filter = "表格页"
+                    elif "图表" in slide or "chart" in slide_lower:
+                        layout_filter = "图表页"
+                    elif slide.startswith("# ") or "标题" in slide:
+                        layout_filter = "封面标题页"
+
+                    # 布局筛选
+                    layout_categories = ["全部", "封面标题页", "内容页", "表格页", "图表页", "列表页"]
+                    selected_layout = st.selectbox(
+                        "筛选布局类型",
+                        options=layout_categories,
+                        index=layout_categories.index(layout_filter) if layout_filter in layout_categories else 0,
+                        key=f"layout_select_{page_idx}"
+                    )
+
+                    # 筛选模板
+                    filtered_templates = page_templates
+                    if selected_layout != "全部":
+                        layout_en_map = {"封面标题页": "title", "内容页": "content", "表格页": "table", "图表页": "chart", "列表页": "bullets"}
+                        layout_en = layout_en_map.get(selected_layout, "")
+                        filtered_templates = [t for t in page_templates if t.get("layout_category") == layout_en]
+
+                    if not filtered_templates:
+                        st.warning("没有符合条件的模板")
+                    else:
+                        st.caption(f"找到 {len(filtered_templates)} 个模板")
+
+                        # 网格显示模板（每行 3 个）
+                        cols_per_row = 3
+                        for row_start in range(0, len(filtered_templates), cols_per_row):
+                            cols = st.columns(cols_per_row)
+                            for j, col in enumerate(cols):
+                                idx = row_start + j
+                                if idx >= len(filtered_templates):
+                                    break
+                                tpl = filtered_templates[idx]
+
+                                with col:
+                                    # 显示缩略图
+                                    thumb_path = tpl.get("thumbnail", "")
+                                    full_thumb_path = os.path.join(os.path.dirname(__file__), "page_template", thumb_path)
+
+                                    if os.path.exists(full_thumb_path):
+                                        st.image(full_thumb_path, caption=f"{tpl['source_name']} - 第{tpl['page_num']}页", width='stretch')
+                                    else:
+                                        st.write(f"**{tpl['source_name']}**")
+                                        st.caption(f"第 {tpl['page_num']} 页 - {tpl['layout_category_cn']}")
+
+                                    # 模板描述预览
+                                    style_desc = tpl.get("style_description", "")
+                                    if len(style_desc) > 100:
+                                        style_desc = style_desc[:100] + "..."
+
+                                    with st.expander("查看风格描述"):
+                                        st.markdown(tpl.get("style_description", ""))
+
+                                    # 选择按钮
+                                    if st.button("选择此模板", key=f"select_tpl_{page_idx}_{tpl['id']}"):
+                                        # 保存选择
+                                        save_page_style(project_name, page_idx, tpl["style_description"], tpl["id"])
+                                        # 使用 pending key 存储新值，下次渲染时应用
+                                        st.session_state[f"pending_page_style_{page_idx}"] = tpl["style_description"]
+                                        # 更新 session state
+                                        st.session_state[f"show_template_selector_{page_idx}"] = False
+                                        st.toast(f"已选择模板，风格描述已更新", icon="✅")
+                                        st.rerun()
+
+                    # 取消按钮
+                    if st.button("取消选择", key=f"cancel_select_{page_idx}"):
+                        st.session_state[f"show_template_selector_{page_idx}"] = False
+                        st.rerun()
+
+                # 显示当前选中的模板信息
+                if selected_template_id:
+                    matching_tpl = next((t for t in page_templates if t["id"] == selected_template_id), None)
+                    if matching_tpl:
+                        st.info(f"当前模板：{matching_tpl['source_name']} 第{matching_tpl['page_num']}页 ({matching_tpl['layout_category_cn']})")
 
 with tab_style:
     style_text = st.text_area(
@@ -203,27 +427,52 @@ with tab_style:
         write_file(style_path, style_text)
         st.success("已保存")
 
+# 删除不再使用的变量
+# available_templates 和 template_config 已不再需要
+
 # ── Step 3: Generate images ──────────────────────────────────────────
 st.header("Step 3: 生成信息图")
 
 current_opt = read_file(opt_path)
-current_style = read_file(style_path)
+global_style = read_file(style_path)
 
 if current_opt:
     slides = parse_slides(current_opt)
     st.info(f"共解析出 {len(slides)} 页幻灯片")
+
+    def get_page_style(page_idx: int) -> str:
+        """获取指定页面的风格描述（每次都重新加载最新数据）"""
+        page_key = str(page_idx)
+        # 重新加载最新的风格配置
+        latest_styles = load_page_styles(project_name)
+        saved = latest_styles.get("pages", {}).get(page_key, {})
+        return saved.get("style_description", global_style)
 
     if st.button("一键生成所有图片", type="primary"):
         os.makedirs(img_dir, exist_ok=True)
         progress = st.progress(0)
         status = st.empty()
 
+        # 显示每页使用的风格来源
+        style_info = []
+        for i in range(len(slides)):
+            page_style = get_page_style(i + 1)
+            if page_style != global_style:
+                style_info.append(f"第{i+1}页: 使用选定的模板风格")
+            else:
+                style_info.append(f"第{i+1}页: 使用全局风格")
+        with st.expander("风格来源", expanded=False):
+            for info in style_info:
+                st.write(info)
+
         def generate_single_image(args):
             """生成单张图片的辅助函数"""
             i, slide = args
             try:
+                # 使用该页保存的风格描述
+                page_style = get_page_style(i + 1)
                 img_bytes = generate_slide_image(
-                    slide, current_style, i + 1, len(slides), model=image_model
+                    slide, page_style, i + 1, len(slides), model=image_model
                 )
                 if img_bytes:
                     img_path = os.path.join(img_dir, f"{i+1:02d}.jpg")
@@ -284,9 +533,13 @@ if current_opt:
                             )
                             if st.button("重新生成", key=f"btn_regen_{idx}"):
                                 with st.spinner("重新生成中..."):
+                                    # 使用该页保存的风格描述
+                                    page_style = get_page_style(page_idx + 1)
+                                    # 显示使用的风格描述（前 200 字符）
+                                    st.caption(f"风格描述: {page_style[:200]}...")
                                     new_bytes = generate_slide_image(
                                         custom_prompt,
-                                        current_style,
+                                        page_style,
                                         page_idx + 1,
                                         len(slides),
                                         model=image_model,
