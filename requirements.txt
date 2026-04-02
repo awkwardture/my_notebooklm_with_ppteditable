@@ -4,3 +4,8 @@ python-dotenv>=1.0.0
 Pillow>=10.0.0
 img2pdf>=0.5.0
 python-pptx>=0.6.21
+
+# PPT 转换依赖
+# poppler: 需手动安装，提供 pdftoppm 命令
+# Windows: 从 https://github.com/oschwartz10612/poppler-windows/releases 下载
+# 解压后将 bin 目录添加到系统 PATH
