@@ -5,9 +5,9 @@
     "source_name": "2026-02_Science_and_Technology_Innovation_Operatio",
     "page_num": 1,
     "thumbnail": "thumbnails/2026-02_Science_and_Technology_Innovation_Operatio_p1.jpg",
-    "layout_category": "content",
-    "layout_category_cn": "内容页",
-    "style_description": "商务科技简约风格，浅灰白色背景，深红色主标题文字，衬线字体，几何网格线条装饰，散点连接设计，红色三角形几何点缀，左上角品牌 Logo，底部居中落款，红色矩形色块，正式严谨，留白充足",
+    "layout_category": "title",
+    "layout_category_cn": "封面标题页",
+    "style_description": "商务科技简约风格，浅灰白色背景，深红色主标题文字，衬线字体，几何网格线条装饰，散点连接设计，红色三角形几何点缀，左上角中国电信和5G Logo，底部居中落款，红色矩形色块，正式严谨，留白充足",
     "elements": {
       "has_title": false,
       "has_subtitle": false,

@@ -7,6 +7,10 @@ from src.image_generator import generate_slide_image, IMAGE_MODELS, DEFAULT_MODE
 from src.pdf_builder import build_pdf
 from src.template_renderer import list_templates, list_layout_categories, render_template, get_template_manager, get_layout_category_cn
 from src.template_image_generator import generate_prompt_from_template
+from src.template_analyzer import (
+    analyze_ppt_template, add_template_to_library, pptx_to_thumbnails,
+    analyze_slide_style
+)
 import json
 from src.ppt_generator import (
     generate_slide_code, build_single_slide_pptx, build_single_slide_pptx_with_retry,
@@ -16,6 +20,10 @@ from src.ppt_generator import (
 
 PROJECTS_DIR = os.path.join(os.path.dirname(__file__), "projects")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+PAGE_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "page_template")
+THUMBNAILS_DIR = os.path.join(PAGE_TEMPLATES_DIR, "thumbnails")
+os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Our's NotebookLM", layout="wide")
 st.title("Our's NotebookLM")
@@ -123,6 +131,17 @@ with st.sidebar:
         key="ppt_mode",
         help="并行：同时生成所有 PPT 页（速度快）；串行：逐页生成（节省资源）",
     )
+
+    st.divider()
+
+    # 模板管理入口
+    st.sidebar.subheader("模板管理")
+    if st.sidebar.button("📋 模板库管理", key="btn_template_manager", use_container_width=True):
+        st.session_state["show_template_manager"] = True
+    if st.session_state.get("show_template_manager", False):
+        if st.sidebar.button("返回项目", key="btn_back_to_project", use_container_width=True):
+            st.session_state["show_template_manager"] = False
+            st.rerun()
 
 # ── Helper paths ─────────────────────────────────────────────────────
 raw_path = os.path.join(proj_dir, "原文档", "原稿.md")
@@ -871,3 +890,412 @@ with tab_ppt:
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     key="btn_download_full_ppt",
                 )
+
+
+# ── Template Manager Helper Functions ─────────────────────────────────
+
+def delete_template_from_library(template_id: str, library_path: str = None) -> bool:
+    """从模板库删除指定模板"""
+    if not library_path:
+        library_path = os.path.join(PAGE_TEMPLATES_DIR, "page_templates.json")
+
+    if not os.path.exists(library_path):
+        return False
+
+    with open(library_path, 'r', encoding='utf-8') as f:
+        templates = json.load(f)
+
+    original_count = len(templates)
+    templates = [t for t in templates if t.get('id') != template_id]
+
+    if len(templates) < original_count:
+        with open(library_path, 'w', encoding='utf-8') as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
+
+def update_template_in_library(template_id: str, updated_fields: dict, library_path: str = None) -> bool:
+    """更新模板库中指定模板的字段
+
+    Args:
+        template_id: 模板ID
+        updated_fields: 要更新的字段字典（如 {"style_description": "...", "layout_category": "..."}）
+        library_path: 模板库文件路径
+
+    Returns:
+        是否成功
+    """
+    if not library_path:
+        library_path = os.path.join(PAGE_TEMPLATES_DIR, "page_templates.json")
+
+    if not os.path.exists(library_path):
+        return False
+
+    with open(library_path, 'r', encoding='utf-8') as f:
+        templates = json.load(f)
+
+    updated = False
+    for t in templates:
+        if t.get('id') == template_id:
+            t.update(updated_fields)
+            updated = True
+            break
+
+    if updated:
+        with open(library_path, 'w', encoding='utf-8') as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
+
+# ── Template Manager UI ──────────────────────────────────────────────
+if st.session_state.get("show_template_manager", False):
+    st.header("📋 模板库管理")
+
+    # 加载所有模板
+    page_templates = load_page_templates()
+
+    tab_upload, tab_browse, tab_test = st.tabs(["📤 上传分析 PPT", "📚 浏览模板库", "🧪 测试风格"])
+
+    # ── Tab 1: Upload and Analyze PPT ──
+    with tab_upload:
+        st.subheader("上传 PPT 文件并分析生成新模板")
+        st.markdown("""
+        **流程说明：**
+        1. 上传 PPTX 文件
+        2. 系统自动提取缩略图并分析每一页的视觉风格
+        3. AI 生成风格描述和布局分类
+        4. 预览分析结果，可手动编辑调整
+        5. 保存为全局模板
+        """)
+
+        uploaded_file = st.file_uploader("选择 PPTX 文件", type=["pptx"], key="upload_pptx")
+
+        if uploaded_file:
+            # 保存上传的文件
+            temp_pptx_path = os.path.join(PAGE_TEMPLATES_DIR, "temp_upload", uploaded_file.name)
+            os.makedirs(os.path.dirname(temp_pptx_path), exist_ok=True)
+            with open(temp_pptx_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+
+            st.success(f"已上传：{uploaded_file.name}")
+
+            # 源文件名称
+            source_name = os.path.splitext(uploaded_file.name)[0]
+
+            # 分析选项
+            st.subheader("分析设置")
+            analysis_model = st.selectbox(
+                "Vision 分析模型",
+                options=["qwen3.5-plus", "qwen3-vision"],
+                index=0,
+                help="选择用于分析 PPT 风格的 Vision 模型"
+            )
+
+            # 提取缩略图
+            source_name_safe = source_name.replace("/", "_").replace("\\", "_")
+            slide_thumb_dir = os.path.join(THUMBNAILS_DIR, source_name_safe)
+
+            if st.button("🔍 开始分析 PPT", type="primary", key="btn_analyze_ppt"):
+                with st.spinner("正在生成缩略图并分析每一页的风格..."):
+                    # 1. 生成缩略图
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    status_text.text("正在生成缩略图...")
+                    thumbnails = pptx_to_thumbnails(temp_pptx_path, slide_thumb_dir)
+
+                    if not thumbnails:
+                        st.warning("无法自动生成缩略图，请确保系统安装了 LibreOffice")
+                        st.info("或者你可以手动上传每一页的缩略图")
+                    else:
+                        status_text.text(f"生成了 {len(thumbnails)} 张缩略图")
+                        progress_bar.progress(0.3)
+
+                    # 2. 分析每一页
+                    status_text.text("正在分析风格...")
+                    prs_data = load_pptx_info(temp_pptx_path)
+                    total_slides = prs_data.get("total_slides", len(thumbnails) if thumbnails else 0)
+
+                    analyzed_templates = []
+                    for i in range(1, total_slides + 1):
+                        thumb_path = os.path.join(slide_thumb_dir, f"slide_{i}.jpg")
+                        if os.path.exists(thumb_path):
+                            analysis = analyze_slide_style(thumb_path, i, model=analysis_model)
+                            template_data = {
+                                "id": f"{source_name_safe}_page_{i}",
+                                "source_file": uploaded_file.name,
+                                "source_name": source_name_safe,
+                                "page_num": i,
+                                "thumbnail": f"thumbnails/{source_name_safe}/slide_{i}.jpg",
+                                "layout_category": analysis.get("layout_category", "content"),
+                                "layout_category_cn": analysis.get("layout_category_cn", "内容页"),
+                                "style_description": analysis.get("style_description", ""),
+                                "elements": analysis.get("elements", {}),
+                                "colors": analysis.get("colors", {})
+                            }
+                            analyzed_templates.append(template_data)
+                            progress_bar.progress(0.3 + (i / total_slides) * 0.7)
+                        else:
+                            st.warning(f"第 {i} 页缩略图不存在")
+
+                    # 保存到 session state 供后续编辑
+                    st.session_state["analyzed_templates"] = analyzed_templates
+                    st.session_state["analyzed_source_name"] = source_name_safe
+
+                    status_text.text("分析完成！")
+                    st.success(f"分析了 {len(analyzed_templates)} 页")
+                    st.rerun()
+
+            # 显示分析结果供编辑
+            if "analyzed_templates" in st.session_state:
+                st.divider()
+                st.subheader("编辑分析结果")
+                st.info("你可以逐页编辑风格描述，确认无误后保存到模板库")
+
+                templates_to_save = []
+                for tpl in st.session_state["analyzed_templates"]:
+                    with st.expander(f"第 {tpl['page_num']} 页 - {tpl['layout_category_cn']}", expanded=False):
+                        # 显示缩略图
+                        thumbnail = tpl.get("thumbnail")
+                        thumb_path = os.path.join(PAGE_TEMPLATES_DIR, thumbnail) if thumbnail else None
+                        if thumb_path and os.path.isfile(thumb_path):
+                            st.image(thumb_path, width=300)
+
+                        # 编辑布局类型
+                        layout_options = ["title", "content", "table", "chart", "bullets"]
+                        layout_labels = ["封面标题页", "内容页", "表格页", "图表页", "列表页"]
+                        layout_map = dict(zip(layout_options, layout_labels))
+                        layout_map_reverse = {v: k for k, v in layout_map.items()}
+
+                        selected_layout_label = st.selectbox(
+                            "布局类型",
+                            options=layout_labels,
+                            index=layout_options.index(tpl["layout_category"]) if tpl["layout_category"] in layout_options else 1,
+                            key=f"layout_{tpl['page_num']}"
+                        )
+
+                        # 编辑风格描述
+                        edited_style = st.text_area(
+                            "风格描述",
+                            value=tpl["style_description"],
+                            height=150,
+                            key=f"style_{tpl['page_num']}"
+                        )
+
+                        # 更新
+                        tpl["layout_category"] = layout_map_reverse.get(selected_layout_label, "content")
+                        tpl["layout_category_cn"] = selected_layout_label
+                        tpl["style_description"] = edited_style
+
+                        templates_to_save.append(tpl)
+
+                # 保存按钮
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ 保存到模板库", type="primary", key="btn_save_templates"):
+                        # 添加到模板库
+                        success = add_template_to_library(templates_to_save)
+                        if success:
+                            st.success(f"成功保存 {len(templates_to_save)} 个模板到全局模板库")
+                            # 清除 session state
+                            del st.session_state["analyzed_templates"]
+                            del st.session_state["analyzed_source_name"]
+                            st.rerun()
+                        else:
+                            st.warning("没有新模板需要保存（可能已存在）")
+
+                with col2:
+                    if st.button("🗑️ 取消", key="btn_cancel_analysis"):
+                        del st.session_state["analyzed_templates"]
+                        if "analyzed_source_name" in st.session_state:
+                            del st.session_state["analyzed_source_name"]
+                        st.rerun()
+
+    # ── Tab 2: Browse Templates ──
+    with tab_browse:
+        st.subheader("📚 模板库")
+        st.caption(f"共 {len(page_templates)} 个模板")
+
+        # 筛选
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_source = st.text_input("按来源筛选", placeholder="输入来源文件名称关键词")
+        with col2:
+            filter_layout = st.selectbox(
+                "按布局类型筛选",
+                options=["全部", "封面标题页", "内容页", "表格页", "图表页", "列表页"]
+            )
+
+        # 筛选后的模板
+        filtered = page_templates
+        if filter_source:
+            filtered = [t for t in filtered if filter_source.lower() in t.get("source_name", "").lower()]
+        if filter_layout != "全部":
+            filtered = [t for t in filtered if t.get("layout_category_cn") == filter_layout]
+
+        st.info(f"找到 {len(filtered)} 个模板")
+
+        # 网格显示
+        if filtered:
+            cols_per_row = 3
+            for row_start in range(0, len(filtered), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j, col in enumerate(cols):
+                    idx = row_start + j
+                    if idx >= len(filtered):
+                        break
+                    tpl = filtered[idx]
+
+                    with col:
+                        # 缩略图
+                        thumbnail = tpl.get("thumbnail")
+                        thumb_path = os.path.join(PAGE_TEMPLATES_DIR, thumbnail) if thumbnail else None
+                        if thumb_path and os.path.isfile(thumb_path):
+                            st.image(thumb_path, caption=f"{tpl.get('source_name', '')} P{tpl.get('page_num', 0)}", use_container_width=True)
+                        else:
+                            st.write(f"**{tpl.get('source_name', 'Unknown')}**")
+                            st.caption(f"第 {tpl.get('page_num', 0)} 页 - {tpl.get('layout_category_cn', '内容页')}")
+
+                        # 编辑模板（展开式）
+                        with st.expander("编辑模板"):
+                            # 布局类型选择
+                            layout_options = ["title", "content", "table", "chart", "bullets"]
+                            layout_labels = ["封面标题页", "内容页", "表格页", "图表页", "列表页"]
+                            layout_map = dict(zip(layout_options, layout_labels))
+                            layout_map_reverse = {v: k for k, v in layout_map.items()}
+
+                            current_layout_cn = tpl.get("layout_category_cn", "内容页")
+                            current_layout_idx = layout_labels.index(current_layout_cn) if current_layout_cn in layout_labels else 1
+
+                            edited_layout_label = st.selectbox(
+                                "布局类型",
+                                options=layout_labels,
+                                index=current_layout_idx,
+                                key=f"edit_layout_{tpl.get('id', idx)}"
+                            )
+
+                            # 风格描述编辑
+                            edited_style = st.text_area(
+                                "风格描述",
+                                value=tpl.get("style_description", ""),
+                                height=120,
+                                key=f"edit_style_{tpl.get('id', idx)}"
+                            )
+
+                            # 保存和删除按钮
+                            col_save, col_del = st.columns(2)
+                            with col_save:
+                                if st.button("💾 保存", key=f"save_tpl_{tpl.get('id', idx)}"):
+                                    update_template_in_library(
+                                        tpl.get("id"),
+                                        {
+                                            "layout_category": layout_map_reverse.get(edited_layout_label, "content"),
+                                            "layout_category_cn": edited_layout_label,
+                                            "style_description": edited_style
+                                        }
+                                    )
+                                    st.success("模板已保存")
+                                    st.rerun()
+                            with col_del:
+                                if st.button("🗑️ 删除", key=f"del_tpl_{tpl.get('id', idx)}"):
+                                    delete_template_from_library(tpl.get("id"))
+                                    st.rerun()
+
+    # ── Tab 3: Test Style ──
+    with tab_test:
+        st.subheader("🧪 测试风格")
+        st.markdown("""
+        **测试流程：**
+        1. 选择一个现有模板
+        2. 输入你的 PPT 内容
+        3. 生成测试图片预览效果
+        4. 如果满意，可以在项目中使用该模板
+        """)
+
+        # 选择模板
+        template_options = {f"{t['source_name']} - P{t['page_num']} ({t['layout_category_cn']})": t for t in page_templates}
+        selected_template_name = st.selectbox(
+            "选择模板",
+            options=list(template_options.keys()),
+            format_func=lambda x: x
+        )
+
+        if selected_template_name:
+            selected_template = template_options[selected_template_name]
+
+            # 显示模板信息
+            col1, col2 = st.columns(2)
+            with col1:
+                thumbnail = selected_template.get("thumbnail")
+                thumb_path = os.path.join(PAGE_TEMPLATES_DIR, thumbnail) if thumbnail else None
+                if thumb_path and os.path.isfile(thumb_path):
+                    st.image(thumb_path, caption="模板缩略图", use_container_width=True)
+
+            with col2:
+                st.markdown(f"**来源:** {selected_template.get('source_name', 'Unknown')}")
+                st.markdown(f"**页码:** 第 {selected_template.get('page_num', 0)} 页")
+                st.markdown(f"**布局:** {selected_template.get('layout_category_cn', '内容页')}")
+                with st.expander("风格描述"):
+                    st.markdown(selected_template.get("style_description", ""))
+
+            # 输入测试内容
+            st.divider()
+            st.subheader("输入测试内容")
+
+            test_title = st.text_input("标题", placeholder="输入你的 PPT 标题")
+            test_subtitle = st.text_input("副标题", placeholder="可选")
+            test_content = st.text_area(
+                "内容要点",
+                placeholder="输入你的 PPT 内容要点，每行一个要点",
+                height=200
+            )
+
+            if st.button("🎨 生成测试图片", type="primary", key="btn_test_style"):
+                if not test_content.strip():
+                    st.warning("请输入测试内容")
+                else:
+                    with st.spinner("正在生成测试图片..."):
+                        # 构建测试内容
+                        test_slide_content = f"# {test_title}\n"
+                        if test_subtitle:
+                            test_slide_content += f"## {test_subtitle}\n"
+                        test_slide_content += f"\n{test_content}"
+
+                        # 使用该模板的风格描述
+                        style_desc = selected_template.get("style_description", "商务简约风格")
+
+                        # 生成图片
+                        img_bytes = generate_slide_image(
+                            slide_content=test_slide_content,
+                            style_desc=style_desc,
+                            page_num=1,
+                            total_pages=1,
+                            model=image_model
+                        )
+
+                        if img_bytes:
+                            st.image(img_bytes, caption="测试效果", use_container_width=True)
+                            st.download_button(
+                                "下载测试图片",
+                                data=img_bytes,
+                                file_name=f"test_{selected_template.get('source_name', 'template')}_p{selected_template.get('page_num', 1)}.jpg",
+                                mime="image/jpeg",
+                                key="btn_download_test_img"
+                            )
+                        else:
+                            st.error("生成失败，请重试")
+
+
+# ── Helper Functions for Template Manager ─────────────────────────────
+
+def load_pptx_info(pptx_path: str) -> dict:
+    """加载 PPTX 文件基本信息"""
+    from pptx import Presentation
+    prs = Presentation(pptx_path)
+    return {
+        "total_slides": len(prs.slides),
+        "slide_width": prs.slide_width,
+        "slide_height": prs.slide_height
+    }

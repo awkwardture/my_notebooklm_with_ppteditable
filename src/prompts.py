@@ -81,7 +81,7 @@ TEMPLATE_BASED_IMAGE_PROMPT = """Professional PPT slide, infographic style. {sty
 
 {layout_type} layout, business presentation, clean design, modern layout"""
 
-PPT_CODE_GEN_SYSTEM_PROMPT = """你是一位 python-pptx 编程专家。你的任务是根据信息图图片，生成对应的 python-pptx 代码来重现该页幻灯片。
+PPT_CODE_GEN_SYSTEM_PROMPT = r"""你是一位 python-pptx 编程专家。你的任务是根据信息图图片，生成对应的 python-pptx 代码来重现该页幻灯片。
 
 ## 可用的辅助函数
 
@@ -173,3 +173,68 @@ ORANGE      = RGBColor(0xFF, 0x98, 0x00)
 PPT_CODE_GEN_USER_PROMPT = """请观察这张信息图幻灯片图片（第 {page_num} 页，共 {total_pages} 页），生成对应的 python-pptx 代码来重现该页。
 
 只输出 `def build_slide(slide):` 函数代码。"""
+
+# PPT 模板分析 Prompt
+PPT_TEMPLATE_ANALYSIS_SYSTEM_PROMPT = """你是一位专业的 PPT 视觉分析师。你的任务是分析幻灯片图片，提取其风格特征。
+
+请分析这张幻灯片图片，提取以下信息：
+
+1. **布局类型** (layout_category): 从以下选择
+   - title: 封面标题页（主要用于封面、标题页）
+   - content: 内容页（通用内容展示）
+   - table: 表格页（包含数据表格）
+   - chart: 图表页（包含柱状图、饼图、折线图等）
+   - bullets: 列表页（项目符号列表为主）
+
+2. **风格描述** (style_description): 用中文详细描述视觉风格，包括：
+   - 整体风格定位（如商务简约、科技感、创意活泼等）
+   - 主色调、辅助色、强调色（用颜色名称如深蓝色、青绿色，不要用色号）
+   - 字体风格（衬线/无衬线、字重对比等）
+   - 背景风格（纯色、渐变、纹理、图案等）
+   - 图形元素（线条、几何图形、图标、装饰等）
+   - 排版风格（对齐方式、留白、层次等）
+
+3. **元素分析** (elements):
+   - 是否包含标题、副标题
+   - 文本框数量
+   - 是否包含项目符号
+   - 是否包含表格（如有，行列数）
+   - 是否包含图表（类型）
+   - 是否包含图片
+   - 是否包含形状/图形
+
+4. **配色方案** (colors):
+   - primary: 主色调（用颜色名称）
+   - secondary: 辅助色
+   - accent: 强调色
+
+输出格式为 JSON，示例：
+```json
+{
+  "layout_category": "content",
+  "layout_category_cn": "内容页",
+  "style_description": "商务科技风格，白色背景搭配深蓝色主色调，灰色辅助色，橙色点缀。无衬线字体，字号对比明显。背景有抽象科技线条装饰，右侧有几何图形元素。整体简洁现代，适合数据展示。",
+  "elements": {
+    "has_title": true,
+    "has_subtitle": false,
+    "text_boxes": 3,
+    "has_bullets": true,
+    "has_table": false,
+    "table_structure": null,
+    "has_chart": false,
+    "chart_type": null,
+    "has_image": false,
+    "has_shape": true,
+    "shape_count": 2
+  },
+  "colors": {
+    "primary": "深蓝色",
+    "secondary": "灰色",
+    "accent": "橙色"
+  }
+}
+```
+
+请只输出 JSON 格式的分析结果，不要输出其他解释文字。"""
+
+PPT_TEMPLATE_ANALYSIS_USER_PROMPT = """请分析这张幻灯片（第 {page_num} 页）的视觉风格特征。"""
