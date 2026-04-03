@@ -69,8 +69,22 @@ def generate_prompt_from_template(
     else:
         content_points_str = str(content_points)[:200]
 
+    # 获取视觉建议和配色方案（作为风格指引，不渲染到图上）
+    style_suggestions = variables.get("style_suggestions", "")
+    color_scheme = variables.get("color_scheme", "")
+
+    # 合并风格指引（纯描述，不含标签）
+    style_guidance = []
+    if style_desc:
+        style_guidance.append(style_desc)
+    if style_suggestions:
+        style_guidance.append(style_suggestions)
+    if color_scheme:
+        style_guidance.append(color_scheme)
+    style_guidance_str = ", ".join(style_guidance)
+
     prompt = TEMPLATE_BASED_IMAGE_PROMPT.format(
-        style_template=style_desc,
+        style_guidance=style_guidance_str,
         title=variables.get("title", ""),
         subtitle=variables.get("subtitle", ""),
         content_points=content_points_str,
@@ -104,6 +118,14 @@ def generate_slide_image_with_template(
     Returns:
         生成的图片 bytes
     """
+    # 提取变量
+    if variables is None:
+        variables = extract_variables_from_content(page_content)
+
+    # 获取视觉建议和配色方案
+    style_suggestions = variables.get("style_suggestions", "")
+    color_scheme = variables.get("color_scheme", "")
+
     # 生成 prompt
     prompt = generate_prompt_from_template(
         template_name=template_name,
@@ -113,9 +135,23 @@ def generate_slide_image_with_template(
         variables=variables
     )
 
-    # 使用 ComfyUI 生成图片
+    # 构建 negative prompt，排除风格标签文字
+    negative_prompt_parts = []
+    if style_suggestions:
+        negative_prompt_parts.append(style_suggestions)
+    if color_scheme:
+        negative_prompt_parts.append(color_scheme)
+    # 添加常见的不需要渲染的文字标签
+    negative_prompt_parts.extend([
+        "视觉建议", "配色建议", "风格指引", "Style:", "Content:", "Points:", "Data:",
+        "布局类型", "封面页", "内容页", "表格页", "图表页", "列表页"
+    ])
+    negative_prompt = ", ".join(negative_prompt_parts)
+
+    # 使用 ComfyUI 生成图片，传入 negative prompt
     return generate_image_comfyui(
         prompt=prompt,
+        negative_prompt=negative_prompt,
         width=1920,
         height=1080,
         steps=20 if model == "z_image_turbo" else 50,

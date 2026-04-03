@@ -124,3 +124,51 @@ def parse_slides(optimized_md: str) -> list[str]:
         if content:
             slides.append(content)
     return slides
+
+def parse_page_styles(json_str: str) -> list:
+    """解析每页风格描述的 JSON 字符串。
+    
+    Args:
+        json_str: JSON 格式的风格描述字符串
+    
+    Returns:
+        每页风格描述的列表，每项包含 page_num, title, style_description
+    """
+    import json
+    import re
+    
+    # 提取 JSON 部分（去除可能的 markdown 代码块标记）
+    json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', json_str, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1).strip()
+    
+    # 尝试提取第一个 [ 到最后一个 ] 之间的内容
+    array_match = re.search(r'\[.*?\]', json_str, re.DOTALL)
+    if array_match:
+        json_str = array_match.group(0)
+    
+    try:
+        data = json.loads(json_str)
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception as e:
+        print(f"解析风格描述失败：{e}")
+        print(f"原始内容：{json_str[:500]}")
+        return []
+
+
+def get_style_for_page(page_styles: list, page_num: int) -> str:
+    """获取指定页的风格描述。
+    
+    Args:
+        page_styles: parse_page_styles 返回的列表
+        page_num: 页码（从 1 开始）
+    
+    Returns:
+        该页的风格描述字符串
+    """
+    for item in page_styles:
+        if item.get("page_num") == page_num:
+            return item.get("style_description", "")
+    return ""

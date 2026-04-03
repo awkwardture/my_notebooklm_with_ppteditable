@@ -262,29 +262,64 @@ def extract_variables_from_content(content: str) -> dict:
         "subtitle": "",
         "content_points": [],
         "key_data": [],
-        "conclusion": ""
+        "conclusion": "",
+        "style_suggestions": "",  # 视觉建议（不渲染到图上，仅作指引）
+        "color_scheme": "",       # 配色建议（不渲染到图上，仅作指引）
     }
 
     lines = content.strip().split('\n')
+    skip_mode = False  # 用于跳过视觉建议/配色建议的内容
+
     for line in lines:
-        line = line.strip()
-        if not line:
+        line_stripped = line.strip()
+        if not line_stripped:
             continue
 
+        # 跳过页码行
+        if line_stripped.startswith('**页码**') or line_stripped.startswith('- **页码**'):
+            continue
+
+        # 跳过视觉建议行
+        if line_stripped.startswith('- **视觉建议**') or line_stripped.startswith('**视觉建议**') or line_stripped.startswith('视觉建议'):
+            skip_mode = True
+            # 提取建议内容作为风格指引，不作为页面内容
+            suggestion_text = line_stripped.split('：', 1)[-1].strip() if '：' in line_stripped else ''
+            variables["style_suggestions"] += suggestion_text + " "
+            continue
+
+        # 跳过配色建议行
+        if line_stripped.startswith('- **配色建议**') or line_stripped.startswith('**配色建议**') or line_stripped.startswith('配色建议'):
+            skip_mode = True
+            # 提取配色内容作为风格指引，不作为页面内容
+            color_text = line_stripped.split('：', 1)[-1].strip() if '：' in line_stripped else ''
+            variables["color_scheme"] += color_text + " "
+            continue
+
+        # 如果是新的内容部分，退出跳过模式
+        if line_stripped.startswith('# ') or line_stripped.startswith('## ') or line_stripped.startswith('- '):
+            if skip_mode and not line_stripped.startswith('- '):
+                skip_mode = False
+
         # 提取标题
-        if line.startswith('# ') and not variables["title"]:
-            variables["title"] = line[2:].strip()
-        elif line.startswith('## ') and not variables["subtitle"]:
-            variables["subtitle"] = line[3:].strip()
-        # 提取要点
-        elif line.startswith('- ') or line.startswith('• '):
-            variables["content_points"].append(line[1:].strip())
-        # 提取关键数据（包含数字的句子）
-        elif any(c.isdigit() for c in line) and len(line) < 100:
-            variables["key_data"].append(line)
+        if line_stripped.startswith('# '):
+            variables["title"] = line_stripped[2:].strip()
+            skip_mode = False
+        elif line_stripped.startswith('## '):
+            variables["subtitle"] = line_stripped[3:].strip()
+            skip_mode = False
+        # 提取要点（跳过视觉建议/配色建议后的内容）
+        elif line_stripped.startswith('- ') and not skip_mode:
+            # 跳过已经单独处理的视觉建议/配色建议
+            if '**视觉建议**' not in line_stripped and '**配色建议**' not in line_stripped:
+                variables["content_points"].append(line_stripped[1:].strip())
+        # 提取关键数据（包含数字的句子，但跳过配色建议中的色值）
+        elif any(c.isdigit() for c in line_stripped) and len(line_stripped) < 100 and not skip_mode:
+            # 跳过纯配色代码行
+            if not line_stripped.startswith('#'):
+                variables["key_data"].append(line_stripped)
         # 提取结论
-        elif '结论' in line or '总结' in line or '总之' in line:
-            variables["conclusion"] = line
+        elif '结论' in line_stripped or '总结' in line_stripped or '总之' in line_stripped:
+            variables["conclusion"] = line_stripped
 
     return variables
 

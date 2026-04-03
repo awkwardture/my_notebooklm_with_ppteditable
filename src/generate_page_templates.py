@@ -198,45 +198,24 @@ def generate_style_description(filename, slide_num, elements, layout_category, t
 - 形状数量: {elements['shape_count']}
 """
 
-    system_prompt = """你是专业的PPT视觉风格分析专家。请仔细观察PPT截图，按照以下结构提取该页的独特视觉风格要素：
+    system_prompt = """你是专业的 PPT 视觉风格分析专家。请仔细观察 PPT 截图，提取该页的独特视觉风格要素。
 
-# PPT 样式风格描述
+【重要】输出格式要求：
+1. 使用简洁的短语/关键词描述，不要用完整句子
+2. 不要使用 Markdown 标记（如 ##、-、** 等）
+3. 不要输出标签式的文字（如"整体风格："、"主色调："等）
+4. 只输出纯视觉描述词，用逗号分隔
 
+示例正确输出：
+商务科技感风格，深蓝色主色调 (#003366)，渐变背景，几何线条装饰，字体现代简洁，层次分明，留白适中
+
+示例错误输出（不要这样写）：
 ## 整体风格
-- **定位**：分析该页的整体设计定位（如企业汇报、商务提案、技术展示等）
-- **基调**：描述整体基调（如专业、简洁、活泼、严肃等）
-- **气质**：描述视觉气质和传递的品牌形象
-
+- **定位**：企业汇报
 ## 主色调
-请观察截图中的实际颜色，列出：
-| 类型 | 色值（尽量准确估计） | 用途 |
+| 类型 | 色值 |
 
-## 字体风格
-观察文字的字体、字号、字重特征
-
-## 背景风格
-描述背景的颜色、图案、渐变、装饰元素
-
-## 图形元素
-描述线条、形状、图标等视觉元素的风格特征
-
-## 排版风格
-描述页面布局方式、对齐方式、留白比例
-
-## 本页视觉元素
-**页面类型**：[指定类型]
-**视觉构成**：描述该页具体的视觉元素组成
-
-## 本页图表视觉建议
-针对该页类型给出具体的图表/表格视觉建议
-
-## 本页内容结构
-描述该页的内容组织结构
-
-## 总结
-一句话总结该页的视觉呈现特点
-
-请确保每项描述都基于截图的实际内容，不要使用模板化的通用描述。"""
+请确保描述基于截图的实际视觉特征，使用逗号分隔的短语格式输出。"""
 
     user_prompt = f"""请分析这张PPT截图，提取其独特的视觉风格要素。
 
@@ -247,7 +226,7 @@ def generate_style_description(filename, slide_num, elements, layout_category, t
 参考元素信息（已通过程序分析）：
 {elements_info}
 
-请仔细观察截图，按照指定结构输出风格描述，确保描述符合该页的实际视觉效果。"""
+请只输出纯视觉描述短语（逗号分隔），不要输出 Markdown 结构化文档。"""
 
     try:
         # 调用阿里云 qwen3.5-plus 识别图片
@@ -276,38 +255,25 @@ def generate_basic_description(filename, slide_num, elements, layout_category):
 
     visual_elements = []
     if elements['has_title']:
-        visual_elements.append("- 顶部标题区")
+        visual_elements.append("顶部标题区")
     if elements['has_table'] and elements['table_structure']:
         ts = elements['table_structure']
-        visual_elements.append(f"- {ts['rows']}行×{ts['cols']}列表格")
+        visual_elements.append(f"{ts['rows']}行×{ts['cols']}列表格")
     if elements['has_chart']:
-        visual_elements.append(f"- {elements['chart_type']}图表")
+        visual_elements.append(f"{elements['chart_type']}图表")
     if elements['has_image']:
-        visual_elements.append("- 装饰图片")
+        visual_elements.append("装饰图片")
     if elements['has_bullets']:
-        visual_elements.append("- 项目符号列表")
+        visual_elements.append("项目符号列表")
     if elements['has_text_boxes'] > 0:
-        visual_elements.append(f"- {elements['has_text_boxes']} 个文本区域")
+        visual_elements.append(f"{elements['has_text_boxes']} 个文本区域")
 
-    visual_elements_str = "\n".join(visual_elements) if visual_elements else "- 简洁内容布局"
+    visual_elements_str = "，".join(visual_elements) if visual_elements else "简洁内容布局"
 
-    return f"""# PPT 样式风格描述
+    layout_type = layout_map.get(layout_category, layout_category)
+    source_name = filename.replace('.pptx', '')
 
-## 整体风格
-- **定位**：企业级汇报风格
-- **基调**：专业、清晰
-
-## 本页视觉元素
-
-**页面类型**：{layout_map.get(layout_category, layout_category)}
-
-**来源**：{filename.replace('.pptx', '')}
-
-**视觉构成**：
-{visual_elements_str}
-
-## 总结
-本页为{layout_map.get(layout_category, layout_category)}，内容层次清晰。"""
+    return f"企业级汇报风格，专业清晰，{layout_type}，{source_name}，{visual_elements_str}，内容层次清晰"
 
 
 # 收集所有页面模板
@@ -333,17 +299,16 @@ def convert_single_pptx(filename):
     pdf_path = convert_pptx_to_pdf(filepath, ppt_temp_dir)
     return (filename, pdf_path)
 
-# 并行转换所有 PPTX 文件
-print(f"\n=== 并行转换 PPTX 为 PDF（{len(ppt_files)}个文件）===")
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-    futures = {executor.submit(convert_single_pptx, fn): fn for fn in ppt_files}
-    for future in concurrent.futures.as_completed(futures):
-        filename, pdf_path = future.result()
-        if pdf_path:
-            pdf_cache[filename] = pdf_path
-            print(f"  [OK] {filename}: PDF 已生成")
-        else:
-            print(f"  [FAIL] {filename}: PDF 生成失败")
+# 串行转换所有 PPTX 文件（LibreOffice 并行转换会冲突）
+print(f"\n=== 转换 PPTX 为 PDF（{len(ppt_files)}个文件）===")
+for filename in ppt_files:
+    result = convert_single_pptx(filename)
+    filename, pdf_path = result
+    if pdf_path:
+        pdf_cache[filename] = pdf_path
+        print(f"  [OK] {filename}: PDF 已生成")
+    else:
+        print(f"  [FAIL] {filename}: PDF 生成失败")
 
 # 将 PDF 页面转为图片（并行处理）
 print(f"\n=== 并行生成缩略图 ===")
@@ -459,7 +424,7 @@ def generate_style_for_page(page_template):
         return (page_template['id'], False, str(e))
 
 # 并发10个调用模型
-with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
     futures = {executor.submit(generate_style_for_page, pt): pt for pt in all_page_templates}
     completed = 0
     for future in concurrent.futures.as_completed(futures):

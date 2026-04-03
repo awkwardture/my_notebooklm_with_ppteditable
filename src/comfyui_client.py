@@ -317,6 +317,7 @@ def create_qwen_image_2512_workflow(
 
 def create_z_image_turbo_workflow(
     prompt: str,
+    negative_prompt: str = "",
     width: int = 1920,
     height: int = 1080,
     steps: int = 20,  # Z-Image-Turbo 推荐 20 步
@@ -370,11 +371,12 @@ def create_z_image_turbo_workflow(
                 "text": prompt
             }
         },
-        # ConditioningZeroOut - Negative conditioning (required for turbo)
+        # CLIP Text Encode - Negative prompt (if provided)
         "5": {
-            "class_type": "ConditioningZeroOut",
+            "class_type": "CLIPTextEncode",
             "inputs": {
-                "conditioning": ["4", 0]
+                "clip": ["2", 0],
+                "text": negative_prompt
             }
         },
         # ModelSamplingAuraFlow - Apply AuraFlow sampling with shift=3
@@ -400,7 +402,7 @@ def create_z_image_turbo_workflow(
             "inputs": {
                 "model": ["6", 0],  # From ModelSamplingAuraFlow
                 "positive": ["4", 0],  # From CLIPTextEncode
-                "negative": ["5", 0],  # From ConditioningZeroOut
+                "negative": ["5", 0],  # From CLIPTextEncode (negative prompt)
                 "latent_image": ["7", 0],
                 "seed": seed,
                 "steps": steps,
@@ -543,6 +545,7 @@ def generate_image_comfyui(
         if use_z_image_turbo:
             workflow = create_z_image_turbo_workflow(
                 prompt=prompt,
+                negative_prompt=negative_prompt,
                 width=width,
                 height=height,
                 steps=steps,
