@@ -136,10 +136,10 @@ with st.sidebar:
 
     # 模板管理入口
     st.sidebar.subheader("模板管理")
-    if st.sidebar.button("📋 模板库管理", key="btn_template_manager", use_container_width=True):
+    if st.sidebar.button("📋 模板库管理", key="btn_template_manager", width='stretch'):
         st.session_state["show_template_manager"] = True
     if st.session_state.get("show_template_manager", False):
-        if st.sidebar.button("返回项目", key="btn_back_to_project", use_container_width=True):
+        if st.sidebar.button("返回项目", key="btn_back_to_project", width='stretch'):
             st.session_state["show_template_manager"] = False
             st.rerun()
 
@@ -1153,7 +1153,7 @@ if st.session_state.get("show_template_manager", False):
                         thumbnail = tpl.get("thumbnail")
                         thumb_path = os.path.join(PAGE_TEMPLATES_DIR, thumbnail) if thumbnail else None
                         if thumb_path and os.path.isfile(thumb_path):
-                            st.image(thumb_path, caption=f"{tpl.get('source_name', '')} P{tpl.get('page_num', 0)}", use_container_width=True)
+                            st.image(thumb_path, caption=f"{tpl.get('source_name', '')} P{tpl.get('page_num', 0)}", width='stretch')
                         else:
                             st.write(f"**{tpl.get('source_name', 'Unknown')}**")
                             st.caption(f"第 {tpl.get('page_num', 0)} 页 - {tpl.get('layout_category_cn', '内容页')}")
@@ -1231,14 +1231,31 @@ if st.session_state.get("show_template_manager", False):
                 thumbnail = selected_template.get("thumbnail")
                 thumb_path = os.path.join(PAGE_TEMPLATES_DIR, thumbnail) if thumbnail else None
                 if thumb_path and os.path.isfile(thumb_path):
-                    st.image(thumb_path, caption="模板缩略图", use_container_width=True)
+                    st.image(thumb_path, caption="模板缩略图", width='stretch')
 
             with col2:
                 st.markdown(f"**来源:** {selected_template.get('source_name', 'Unknown')}")
                 st.markdown(f"**页码:** 第 {selected_template.get('page_num', 0)} 页")
                 st.markdown(f"**布局:** {selected_template.get('layout_category_cn', '内容页')}")
-                with st.expander("风格描述"):
-                    st.markdown(selected_template.get("style_description", ""))
+
+                # 可编辑的风格描述 - 用模板ID作为key的一部分，切换模板时自动刷新
+                st.subheader("风格描述")
+                template_id = selected_template.get("id", "default")
+                test_style_desc = st.text_area(
+                    "修改风格描述后可直接测试，满意后保存",
+                    value=selected_template.get("style_description", ""),
+                    height=150,
+                    key=f"test_style_desc_{template_id}"
+                )
+
+                # 保存风格描述按钮
+                if st.button("💾 保存风格描述", key=f"btn_save_test_style_{template_id}"):
+                    update_template_in_library(
+                        selected_template.get("id"),
+                        {"style_description": test_style_desc}
+                    )
+                    st.success("风格描述已保存到模板库")
+                    st.rerun()
 
             # 输入测试内容
             st.divider()
@@ -1263,8 +1280,8 @@ if st.session_state.get("show_template_manager", False):
                             test_slide_content += f"## {test_subtitle}\n"
                         test_slide_content += f"\n{test_content}"
 
-                        # 使用该模板的风格描述
-                        style_desc = selected_template.get("style_description", "商务简约风格")
+                        # 使用用户编辑的风格描述
+                        style_desc = test_style_desc if test_style_desc.strip() else selected_template.get("style_description", "商务简约风格")
 
                         # 生成图片
                         img_bytes = generate_slide_image(
@@ -1276,7 +1293,7 @@ if st.session_state.get("show_template_manager", False):
                         )
 
                         if img_bytes:
-                            st.image(img_bytes, caption="测试效果", use_container_width=True)
+                            st.image(img_bytes, caption="测试效果", width='stretch')
                             st.download_button(
                                 "下载测试图片",
                                 data=img_bytes,
